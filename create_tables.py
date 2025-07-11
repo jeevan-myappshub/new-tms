@@ -4,10 +4,11 @@ from models.base import Base
 
 # Import all your models so Base knows about them
 import models.employee
+import models.department
+import models.projects
 import models.timesheet
 import models.dailylogs
 import models.dailylogschanges
-import models.department
 import models.projects
 import models.projectapproval
 import models.employee_projects

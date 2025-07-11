@@ -1,90 +1,78 @@
 "use client";
-import { useState, useEffect, useMemo } from "react";
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardContent,
-} from "@/components/ui/card";
+
+import React, { useState, useEffect, useMemo } from "react";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { toast } from "react-toastify";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
+import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 
-const HARDCODED_EMAIL = "manager1@company.com";
 const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:5000";
+const CURRENT_EMAIL = "robertfisher@example.org"; // Replace with auth context in production
 
-// Convert YYYY-MM-DD to MM/DD/YYYY
-function toMMDDYYYY(dateStr) {
-  if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return "";
-  const [yyyy, mm, dd] = dateStr.split("-");
-  return `${mm}/${dd}/${yyyy}`;
+function toYYYYMMDD(date) {
+  if (!date) return "";
+  const d = new Date(date);
+  return d.toISOString().split("T")[0];
 }
 
-// Convert MM/DD/YYYY to YYYY-MM-DD
-function toYYYYMMDDfromMMDD(dateStr) {
-  if (!dateStr || !/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) return "";
-  const [mm, dd, yyyy] = dateStr.split("/");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-// Validate date string
 function isValidDate(dateStr) {
   if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
   const date = new Date(dateStr);
   return !isNaN(date.getTime());
 }
 
-// Normalize time to HH:MM
+function isValidTime(timeStr) {
+  if (!timeStr || !/^\d{2}:\d{2}$/.test(timeStr)) return false;
+  const [hours, minutes] = timeStr.split(":").map(Number);
+  return hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60;
+}
+
 function normalizeTime(timeStr) {
   if (!timeStr) return "";
   return timeStr.split(":").slice(0, 2).join(":");
 }
 
-// Format total hours
-function formatTotalHours(total) {
-  if (!total) return "0:00";
-  const parts = total.split(":");
-  return `${parseInt(parts[0], 10)}:${parts[1]}`;
+function calculateTotalHours(start, end) {
+  if (!start || !end || !isValidTime(start) || !isValidTime(end)) return "0:00";
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  let mins = (eh * 60 + em) - (sh * 60 + sm);
+  if (mins < 0) mins += 24 * 60; // Handle overnight shifts
+  if (mins === 0) return "0:00"; // Handle same start and end time
+  const hours = Math.floor(mins / 60);
+  const minutes = mins % 60;
+  return `${hours}:${minutes.toString().padStart(2, "0")}`;
 }
 
-// Get the next Monday's date in YYYY-MM-DD format
-function getNextMonday() {
-  const today = new Date();
-  const day = today.getDay();
-  const daysUntilMonday = day === 0 ? 1 : 8 - day;
-  const nextMonday = new Date(today);
-  nextMonday.setDate(today.getDate() + daysUntilMonday);
-  return nextMonday.toISOString().split("T")[0];
+function getDayOfWeek(dateStr) {
+  if (!isValidDate(dateStr)) return "";
+  const date = new Date(dateStr);
+  return date.toLocaleString("en-US", { weekday: "long" });
 }
 
-// Tree-like hierarchy component
 const HierarchyTree = ({ hierarchy, currentEmployee }) => {
-  const fullHierarchy = [...hierarchy].reverse().concat([currentEmployee]);
+  // Compose the full hierarchy: managers (bottom-up) + current employee
+  const fullHierarchy = [...(hierarchy || [])].reverse().concat([currentEmployee]);
+
   return (
     <div className="flex flex-col items-center space-y-2">
       {fullHierarchy.length > 0 ? (
         fullHierarchy.map((person, index) => (
-          <div key={person.id} className="flex flex-col items-center">
-            <span className="text-lg">
+          <div key={person.id || person.email || index} className="flex flex-col items-center">
+            <span className="text-lg font-medium">
               {person.email === currentEmployee.email ? "👤 " : ""}
               {person.employee_name}
+            </span>
+            <span className="text-sm text-gray-500 italic">
+              {person.designation?.title ||
+                (person.email === currentEmployee.email
+                  ? currentEmployee.designation?.title
+                  : "No designation")}
             </span>
             {index < fullHierarchy.length - 1 && (
               <span className="text-gray-500 text-xl my-1">↑</span>
@@ -98,96 +86,320 @@ const HierarchyTree = ({ hierarchy, currentEmployee }) => {
   );
 };
 
+const DailyLogChangesDialog = ({ open, onOpenChange, logId, projects }) => {
+  const [changes, setChanges] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (open && logId && !String(logId).startsWith("temp-")) {
+      setLoading(true);
+      fetch(`${BASE_URL}/api/daily-logs/${logId}/changes`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+      })
+        .then((res) => (res.ok ? res.json() : []))
+        .then((data) => setChanges(data))
+        .catch(() => setChanges([]))
+        .finally(() => setLoading(false));
+    } else {
+      setChanges([]);
+    }
+  }, [open, logId]);
+
+  const getProjectName = (pid) => {
+    const proj = projects.find((p) => String(p.id) === String(pid));
+    return proj ? proj.name : "";
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Change History</DialogTitle>
+        </DialogHeader>
+        {loading ? (
+          <div>Loading...</div>
+        ) : changes.length > 0 ? (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Project</TableHead>
+                <TableHead>Description</TableHead>
+                <TableHead>Changed At</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {changes.map((change) => (
+                <TableRow key={change.id}>
+                  <TableCell>{getProjectName(change.project_id)}</TableCell>
+                  <TableCell>{change.new_description}</TableCell>
+                  <TableCell>
+                    {new Date(change.changed_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        ) : (
+          <div className="text-gray-500">No changes recorded.</div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+const TimesheetTable = ({
+  day,
+  logs,
+  projects,
+  loading,
+  setLogsForDay,
+  handleAddLogRow,
+  handleRemoveLogRow,
+  handleSaveLog,
+  selectedLogId,
+  setSelectedLogId,
+  showChangeDialog,
+  setShowChangeDialog,
+}) => {
+  const handleTimeChange = (idx, field, value) => {
+    setLogsForDay((prev) => {
+      const updated = [...prev];
+      if (!updated[idx]) return prev;
+      const newValue = normalizeTime(value);
+      let start = updated[idx].start_time;
+      let end = updated[idx].end_time;
+      if (field === "start_time") start = newValue;
+      if (field === "end_time") end = newValue;
+      updated[idx] = {
+        ...updated[idx],
+        [field]: newValue,
+        total_hours: calculateTotalHours(start, end),
+      };
+      return updated;
+    });
+  };
+
+  const handleProjectChange = (idx, value) => {
+    setLogsForDay((prev) => {
+      const updated = [...prev];
+      if (!updated[idx]) return prev;
+      updated[idx] = { ...updated[idx], project_id: value };
+      return updated;
+    });
+  };
+
+  const handleDescriptionChange = (idx, value) => {
+    setLogsForDay((prev) => {
+      const updated = [...prev];
+      if (!updated[idx]) return prev;
+      updated[idx] = { ...updated[idx], description: value };
+      return updated;
+    });
+  };
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Project</TableHead>
+          <TableHead>Description</TableHead>
+          <TableHead>Start Time</TableHead>
+          <TableHead>End Time</TableHead>
+          <TableHead>Total Hours</TableHead>
+          <TableHead>Actions</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {logs.map((log, idx) => (
+          <TableRow key={log.id}>
+            <TableCell>
+              <Select
+                value={log.project_id || ""}
+                onValueChange={(value) => handleProjectChange(idx, value)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select Project" />
+                </SelectTrigger>
+                <SelectContent>
+                  {projects.map((proj) => (
+                    <SelectItem key={proj.id} value={proj.id.toString()}>
+                      {proj.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </TableCell>
+            <TableCell>
+              <textarea
+                className="w-full border rounded p-2 min-h-[48px] resize-vertical"
+                value={log.description || ""}
+                onChange={(e) => handleDescriptionChange(idx, e.target.value)}
+                placeholder="Enter detailed description"
+                rows={2}
+              />
+            </TableCell>
+            <TableCell>
+              <Input
+                type="time"
+                value={log.start_time || ""}
+                onChange={(e) => handleTimeChange(idx, "start_time", e.target.value)}
+              />
+            </TableCell>
+            <TableCell>
+              <Input
+                type="time"
+                value={log.end_time || ""}
+                onChange={(e) => handleTimeChange(idx, "end_time", e.target.value)}
+              />
+            </TableCell>
+            <TableCell>{log.total_hours || "0:00"}</TableCell>
+            <TableCell>
+              <div className="flex flex-col gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleSaveLog(day, idx)}
+                  disabled={loading || !log.project_id || !isValidTime(log.start_time) || !isValidTime(log.end_time)}
+                >
+                  Save
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setSelectedLogId(log.id);
+                    setShowChangeDialog(true);
+                  }}
+                  disabled={!log.id || String(log.id).startsWith("temp-")}
+                >
+                  View Changes
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => handleRemoveLogRow(idx)}
+                  disabled={logs.length === 1}
+                >
+                  Remove
+                </Button>
+              </div>
+            </TableCell>
+          </TableRow>
+        ))}
+        <TableRow>
+          <TableCell colSpan={6} className="text-center">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleAddLogRow}
+              disabled={loading}
+            >
+              + Add Entry
+            </Button>
+          </TableCell>
+        </TableRow>
+      </TableBody>
+    </Table>
+  );
+};
+
 export default function Home() {
   const [employee, setEmployee] = useState(null);
   const [managerHierarchy, setManagerHierarchy] = useState([]);
-  const [dailyLogs, setDailyLogs] = useState([]);
-  const [editedLogs, setEditedLogs] = useState({});
-  const [weekStarting, setWeekStarting] = useState(getNextMonday());
-  const [loading, setLoading] = useState(false);
-  const [showChangeHistory, setShowChangeHistory] = useState(false);
-  const [selectedLogId, setSelectedLogId] = useState(null);
-  const [logChanges, setLogChanges] = useState([]);
+  const [department, setDepartment] = useState(null);
+  const [designation, setDesignation] = useState(null);
+  const [projects, setProjects] = useState([]);
+  const [weekStart, setWeekStart] = useState(toYYYYMMDD(new Date()));
+  const [weekEnd, setWeekEnd] = useState(toYYYYMMDD(new Date(Date.now() + 6 * 24 * 60 * 60 * 1000)));
+  const [logsByDay, setLogsByDay] = useState({});
   const [timesheetId, setTimesheetId] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [selectedLogId, setSelectedLogId] = useState(null);
+  const [showChangeDialog, setShowChangeDialog] = useState(false);
 
-  // Memoize week dates
+  // Compute week dates
   const weekDates = useMemo(() => {
-    if (!weekStarting || !isValidDate(weekStarting)) return [];
-    const startDate = new Date(weekStarting);
-    return Array.from({ length: 7 }, (_, i) => {
-      const date = new Date(startDate);
-      date.setDate(startDate.getDate() + i);
-      return {
-        date: date.toISOString().split("T")[0],
-        day: date.toLocaleString("en-US", { weekday: "long" }),
-      };
-    });
-  }, [weekStarting]);
-
-  // Initialize empty logs for the current week on mount
-  useEffect(() => {
-    const initializeEmptyLogs = () => {
-      const logsMap = {};
-      weekDates.forEach((day) => {
-        const dateKey = toMMDDYYYY(day.date);
-        logsMap[dateKey] = {
-          id: `temp-${Date.now()}-${dateKey}`,
-          time_in_am: "",
-          time_out_am: "",
-          time_in_pm: "",
-          time_out_pm: "",
-          description: "",
-          total_hours: "0:00",
-          date: dateKey,
-        };
+    if (!weekStart || !isValidDate(weekStart) || !weekEnd || !isValidDate(weekEnd)) return [];
+    const start = new Date(weekStart);
+    const end = new Date(weekEnd);
+    const days = [];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      days.push({
+        date: toYYYYMMDD(new Date(d)),
+        day: getDayOfWeek(toYYYYMMDD(new Date(d))),
       });
-      setEditedLogs(logsMap);
-    };
-    initializeEmptyLogs();
-  }, [weekDates]);
+    }
+    return days;
+  }, [weekStart, weekEnd]);
 
-  // Fetch employee and hierarchy on mount
+  // Fetch employee, department, designation, projects
   useEffect(() => {
-    const fetchProfileWithHierarchy = async () => {
+    const fetchData = async () => {
       setLoading(true);
       try {
-        console.log("Fetching employee profile for:", HARDCODED_EMAIL);
-        const url = `${BASE_URL}/api/employees/profile-with-hierarchy?email=${encodeURIComponent(HARDCODED_EMAIL)}`;
-        const response = await fetch(url, {
+        const profileRes = await fetch(
+          `${BASE_URL}/api/employees/profile-with-hierarchy?email=${encodeURIComponent(CURRENT_EMAIL)}`,
+          { method: "GET", headers: { "Content-Type": "application/json" }, cache: "no-store" }
+        );
+        if (!profileRes.ok) throw new Error("Failed to fetch employee");
+        const profileData = await profileRes.json();
+        setEmployee(profileData.employee);
+        setManagerHierarchy(profileData.manager_hierarchy || []);
+        setDepartment(profileData.department || null);
+        setDesignation(profileData.designation || null);
+
+        const projectsRes = await fetch(`${BASE_URL}/api/projects`, {
           method: "GET",
           headers: { "Content-Type": "application/json" },
           cache: "no-store",
         });
-        if (!response.ok) {
-          const err = await response.json();
-          throw new Error(err.error || `HTTP error ${response.status}`);
-        }
-        const data = await response.json();
-        console.log("Employee data fetched:", data);
-        setEmployee(data.employee);
-        setManagerHierarchy(data.manager_hierarchy || []);
+        if (!projectsRes.ok) throw new Error("Failed to fetch projects");
+        setProjects(await projectsRes.json());
       } catch (error) {
-        console.error("Error fetching profile:", error);
         setEmployee(null);
         setManagerHierarchy([]);
+        setDepartment(null);
+        setDesignation(null);
+        setProjects([]);
         toast.error(`Error fetching data: ${error.message}`);
       } finally {
         setLoading(false);
       }
     };
-    fetchProfileWithHierarchy();
+    fetchData();
   }, []);
+
+  // Initialize logs for each day in week
+  useEffect(() => {
+    const logs = {};
+    weekDates.forEach((d) => {
+      logs[d.date] = logsByDay[d.date]?.length > 0
+        ? logsByDay[d.date]
+        : [{
+            id: `temp-${Date.now()}-${d.date}-0`,
+            project_id: "",
+            description: "",
+            start_time: "",
+            end_time: "",
+            total_hours: "0:00",
+            log_date: d.date,
+          }];
+    });
+    setLogsByDay(logs);
+  }, [weekDates]);
 
   // Save week: check/create timesheet, fetch logs
   const handleSaveWeek = async () => {
-    if (!employee?.employee_name || !isValidDate(weekStarting)) {
-      toast.error("Please select a valid week starting date.");
+    if (!employee?.id || !isValidDate(weekStart) || !isValidDate(weekEnd)) {
+      toast.error("Please select a valid week and ensure employee data is loaded.");
       return;
     }
     setLoading(true);
     try {
-      console.log("Checking/creating timesheet for week:", weekStarting);
-      const checkUrl = `${BASE_URL}/api/timesheets/by-employee-name-week?employee_name=${encodeURIComponent(employee.employee_name)}&week_starting=${encodeURIComponent(weekStarting)}`;
+      // Check or create timesheet for this week
+      const checkUrl = `${BASE_URL}/api/timesheets/by-employee-week?employee_id=${employee.id}&start_date=${weekStart}&end_date=${weekEnd}`;
       let timesheetRes = await fetch(checkUrl, {
         method: "GET",
         headers: { "Content-Type": "application/json" },
@@ -198,362 +410,251 @@ export default function Home() {
       if (timesheetRes.ok) {
         timesheet = await timesheetRes.json();
         setTimesheetId(timesheet.id);
-        console.log("Timesheet found:", timesheet);
         toast.info("Week already exists. Showing records.");
       } else if (timesheetRes.status === 404) {
-        console.log("Creating new timesheet");
         const createRes = await fetch(`${BASE_URL}/api/timesheets`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            employee_name: employee.employee_name,
-            week_starting: weekStarting,
+            employee_id: employee.id,
+            start_date: weekStart,
+            end_date: weekEnd,
           }),
         });
-        if (!createRes.ok) {
-          const err = await createRes.json();
-          throw new Error(err.error || "Failed to save week starting date.");
-        }
+        if (!createRes.ok) throw new Error("Failed to save week.");
         timesheet = await createRes.json();
         setTimesheetId(timesheet.id);
-        console.log("Timesheet created:", timesheet);
-        toast.success("Week starting date saved successfully!");
+        toast.success("Week saved successfully!");
       } else {
-        const err = await timesheetRes.json();
-        throw new Error(err.error || "Failed to fetch timesheet.");
+        throw new Error("Failed to fetch timesheet.");
       }
 
-      // Fetch daily logs
-      const logsUrl = `${BASE_URL}/api/daily-logs?timesheet_id=${timesheet.id}`;
-      console.log("Fetching logs for timesheet_id:", timesheet.id);
+      // Fetch daily logs for this timesheet
+      const logsUrl = `${BASE_URL}/api/timesheets/${timesheet.id}/daily-logs`;
       const logsRes = await fetch(logsUrl, {
         method: "GET",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
       });
       let logsData = [];
-      if (logsRes.ok) {
-        logsData = await logsRes.json();
-      } else {
-        console.error("Failed to fetch logs:", await logsRes.json());
-      }
-      console.log("Logs fetched:", logsData);
-      setDailyLogs(logsData);
+      if (logsRes.ok) logsData = await logsRes.json();
 
-      // Update logs map with fetched data
+      // Group logs by day
       const logsMap = {};
+      weekDates.forEach((d) => (logsMap[d.date] = []));
       logsData.forEach((log) => {
-        const dateKey = toMMDDYYYY(log.log_date);
-        if (dateKey) {
-          logsMap[dateKey] = {
+        if (logsMap[log.log_date]) {
+          logsMap[log.log_date].push({
             id: log.id,
-            time_in_am: normalizeTime(log.morning_in) || "",
-            time_out_am: normalizeTime(log.morning_out) || "",
-            time_in_pm: normalizeTime(log.afternoon_in) || "",
-            time_out_pm: normalizeTime(log.afternoon_out) || "",
-            description: log.description || "",
-            total_hours: formatTotalHours(log.total_hours) || "0:00",
-            date: dateKey,
-          };
+            project_id: log.project_id?.toString() || "",
+            description: log.task_description || "",
+            start_time: log.start_time || "",
+            end_time: log.end_time || "",
+            total_hours: log.total_hours || "0:00",
+            log_date: log.log_date,
+          });
         }
       });
-      weekDates.forEach((day) => {
-        const dateKey = toMMDDYYYY(day.date);
-        if (!logsMap[dateKey]) {
-          logsMap[dateKey] = {
-            id: `temp-${Date.now()}-${dateKey}`,
-            time_in_am: "",
-            time_out_am: "",
-            time_in_pm: "",
-            time_out_pm: "",
+      // Ensure at least one row per day
+      weekDates.forEach((d) => {
+        if (logsMap[d.date].length === 0) {
+          logsMap[d.date].push({
+            id: `temp-${Date.now()}-${d.date}-0`,
+            project_id: "",
             description: "",
+            start_time: "",
+            end_time: "",
             total_hours: "0:00",
-            date: dateKey,
-          };
+            log_date: d.date,
+          });
         }
       });
-      setEditedLogs(logsMap);
-      console.log("Logs map set:", logsMap);
+      setLogsByDay(logsMap);
+      console.log("Logs after saveWeek:", logsMap);
     } catch (error) {
-      console.error("Error saving week:", error);
       toast.error(`Error saving week: ${error.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  // Calculate total hours
-  const calculateTotalHours = (log) => {
-    const parseTime = (time) => {
-      if (!time) return 0;
-      let [hours, minutes] = time.split(":").map(Number);
-      if (isNaN(hours) || isNaN(minutes)) return 0;
-      return hours * 60 + minutes;
-    };
-
-    let totalMinutes = 0;
-    if (log.time_in_am && log.time_out_am) {
-      const inMinutes = parseTime(log.time_in_am);
-      const outMinutes = parseTime(log.time_out_am);
-      if (outMinutes > inMinutes) totalMinutes += outMinutes - inMinutes;
+  // Save a single log (row) for a day
+  const handleSaveLog = async (day, idx) => {
+    const logsForDay = logsByDay[day.date] || [];
+    if (!Array.isArray(logsForDay) || idx < 0 || idx >= logsForDay.length) {
+      toast.error(`Invalid log index ${idx} for date ${day.date}.`);
+      return;
     }
-    if (log.time_in_pm && log.time_out_pm) {
-      const inMinutes = parseTime(log.time_in_pm);
-      const outMinutes = parseTime(log.time_out_pm);
-      if (outMinutes > inMinutes) totalMinutes += outMinutes - inMinutes;
-    }
-    if (totalMinutes < 0) return "0:00";
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    return `${hours}:${minutes.toString().padStart(2, "0")}`;
-  };
-
-  // Handle time input focus
-  const handleTimeInputFocus = (dateKey, field) => {
-    setEditedLogs((prev) => {
-      const currentLog = prev[dateKey] || {};
-      if (!currentLog[field]) {
-        const updatedLog = { ...currentLog };
-        switch (field) {
-          case "time_in_am":
-            updatedLog.time_in_am = "08:00";
-            break;
-          case "time_out_am":
-            updatedLog.time_out_am = "12:00";
-            break;
-          case "time_in_pm":
-            updatedLog.time_in_pm = "13:00";
-            break;
-          case "time_out_pm":
-            updatedLog.time_out_pm = "17:00";
-            break;
-          default:
-            break;
-        }
-        updatedLog.total_hours = calculateTotalHours(updatedLog);
-        return { ...prev, [dateKey]: updatedLog };
-      }
-      return prev;
-    });
-  };
-
-  // Handle time input changes
-  const handleTimeChange = (dateKey, field, value) => {
-    setEditedLogs((prev) => {
-      const updatedLog = { ...prev[dateKey], [field]: normalizeTime(value) };
-      updatedLog.total_hours = calculateTotalHours(updatedLog);
-      return { ...prev, [dateKey]: updatedLog };
-    });
-  };
-
-  // Handle description changes
-  const handleDescriptionChange = (dateKey, value) => {
-    setEditedLogs((prev) => ({
-      ...prev,
-      [dateKey]: { ...prev[dateKey], description: value },
-    }));
-  };
-
-  // Save individual log
-  const handleSaveLog = async (dateKey) => {
-    console.log("handleSaveLog called with dateKey:", dateKey);
-    const log = editedLogs[dateKey];
+    const log = logsForDay[idx];
     if (!log) {
-      console.error("No log found for dateKey:", dateKey);
-      toast.error("No log data available for this date.");
+      toast.error("Log data not found.");
       return;
     }
     if (!employee?.id) {
-      console.error("Employee ID missing:", employee);
       toast.error("Employee data not available.");
       return;
     }
     if (!timesheetId) {
-      console.error("Timesheet ID missing:", timesheetId);
       toast.error("Timesheet not selected. Please save the week first.");
       return;
     }
-    const logDate = toYYYYMMDDfromMMDD(dateKey);
-    if (!isValidDate(logDate)) {
-      console.error("Invalid log_date:", logDate);
-      toast.error("Invalid date format for log.");
+    if (!log.project_id || !isValidTime(log.start_time) || !isValidTime(log.end_time)) {
+      toast.error("Please select a project and enter valid start and end times.");
       return;
     }
-
-    setLoading(true);
-    try {
-      let logId = log.id;
-      let isNewLog = typeof logId === "string" && logId.startsWith("temp-");
-      const existingLog = dailyLogs.find((l) => toMMDDYYYY(l.log_date) === dateKey);
-      if (existingLog) {
-        logId = existingLog.id;
-        isNewLog = false;
-        console.log("Existing log found in dailyLogs:", existingLog);
-        toast.info("Log already exists. Updating instead.");
-      }
-
-      const payload = {
+    const logDate = day.date;
+    const payload = [
+      {
+        id: String(log.id).startsWith("temp-") ? null : log.id,
         timesheet_id: timesheetId,
         log_date: logDate,
-        morning_in: normalizeTime(log.time_in_am) || null,
-        morning_out: normalizeTime(log.time_out_am) || null,
-        afternoon_in: normalizeTime(log.time_in_pm) || null,
-        afternoon_out: normalizeTime(log.time_out_pm) || null,
-        description: log.description || "",
-        total_hours: calculateTotalHours(log),
-      };
-      console.log("Sending payload:", payload);
-
-      let res;
-      if (isNewLog) {
-        console.log("Creating new log");
-        res = await fetch(`${BASE_URL}/api/daily-logs`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      } else {
-        console.log("Updating log with ID:", logId);
-        res = await fetch(`${BASE_URL}/api/daily-logs/${logId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      }
-
+        project_id: parseInt(log.project_id, 10),
+        start_time: log.start_time,
+        end_time: log.end_time,
+        total_hours: calculateTotalHours(log.start_time, log.end_time),
+        task_description: log.description || "",
+      },
+    ];
+    setLoading(true);
+    try {
+      const res = await fetch(`${BASE_URL}/api/daily-logs/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
       if (!res.ok) {
-        const err = await res.json();
-        console.error("API error:", err);
-        throw new Error(err.error || `Failed to ${isNewLog ? "create" : "update"} daily log.`);
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.message || "Failed to save daily log.");
       }
-
-      if (!isNewLog && existingLog && log.description && log.description !== existingLog.description) {
-        console.log("Checking for existing description changes for log ID:", logId);
-        const changesRes = await fetch(`${BASE_URL}/api/daily-logs/${logId}/changes`, {
-          method: "GET",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-        });
-        let existingChanges = [];
-        if (changesRes.ok) {
-          existingChanges = await changesRes.json();
-        }
-        if (existingChanges.length === 0) {
-          console.log("No prior changes found. Recording first description change for log ID:", logId);
-          await fetch(`${BASE_URL}/api/daily-log-changes`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              daily_log_id: logId,
-              new_description: log.description,
-            }),
-          });
-          console.log("First description change recorded");
-        } else {
-          console.log("Changes already exist for log ID:", logId, existingChanges);
-        }
-      }
-
       toast.success("Log saved successfully!");
-      console.log("Log saved successfully");
 
-      // Refetch logs
-      const logsUrl = `${BASE_URL}/api/daily-logs?timesheet_id=${timesheetId}`;
-      console.log("Refetching logs:", logsUrl);
+      // Refetch logs for this day only
+      const logsUrl = `${BASE_URL}/api/timesheets/${timesheetId}/daily-logs`;
       const logsRes = await fetch(logsUrl, {
         method: "GET",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
       });
-      let logsData = [];
-      if (logsRes.ok) {
-        logsData = await logsRes.json();
-      } else {
-        console.error("Failed to fetch logs:", await logsRes.json());
-      }
-      setDailyLogs(logsData);
+      if (!logsRes.ok) throw new Error("Failed to fetch logs.");
+      const logsData = await logsRes.json();
 
-      const logsMap = {};
-      logsData.forEach((log) => {
-        const dateKey = toMMDDYYYY(log.log_date);
-        if (dateKey) {
-          logsMap[dateKey] = {
-            id: log.id,
-            time_in_am: normalizeTime(log.morning_in) || "",
-            time_out_am: normalizeTime(log.morning_out) || "",
-            time_in_pm: normalizeTime(log.afternoon_in) || "",
-            time_out_pm: normalizeTime(log.afternoon_out) || "",
-            description: log.description || "",
-            total_hours: formatTotalHours(log.total_hours) || "0:00",
-            date: dateKey,
-          };
+      // Update logs for this day only
+      setLogsByDay((prev) => {
+        const updated = { ...prev };
+        updated[logDate] = logsData
+          .filter((l) => l.log_date === logDate)
+          .map((l) => ({
+            id: l.id,
+            project_id: l.project_id?.toString() || "",
+            description: l.task_description || "",
+            start_time: l.start_time || "",
+            end_time: l.end_time || "",
+            total_hours: l.total_hours || "0:00",
+            log_date: l.log_date,
+          }));
+        if (updated[logDate].length === 0) {
+          updated[logDate] = [
+            {
+              id: `temp-${Date.now()}-${logDate}-0`,
+              project_id: "",
+              description: "",
+              start_time: "",
+              end_time: "",
+              total_hours: "0:00",
+              log_date: logDate,
+            },
+          ];
         }
+        return updated;
       });
-      weekDates.forEach((day) => {
-        const dateKey = toMMDDYYYY(day.date);
-        if (!logsMap[dateKey]) {
-          logsMap[dateKey] = {
-            id: `temp-${Date.now()}-${dateKey}`,
-            time_in_am: "",
-            time_out_am: "",
-            time_in_pm: "",
-            time_out_pm: "",
-            description: "",
-            total_hours: "0:00",
-            date: dateKey,
-          };
-        }
-      });
-      setEditedLogs(logsMap);
-      console.log("Updated logs map:", logsMap);
     } catch (error) {
-      console.error("Error in handleSaveLog:", error);
-      if (error.message.includes("Failed to fetch")) {
-        toast.error("Unable to connect to the backend. Is the server running at " + BASE_URL + "?");
-      } else {
-        toast.error(`Error saving log: ${error.message}`);
-      }
+      toast.error(`Error saving log: ${error.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  // Fetch log changes
-  const fetchLogChanges = async (logId) => {
-    console.log("Fetching changes for log ID:", logId);
-    try {
-      const response = await fetch(`${BASE_URL}/api/daily-logs/${logId}/changes`, {
-        method: "GET",
-        headers: { "Content-Type": "application/json" },
-        cache: "no-store",
-      });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || `HTTP error ${response.status}`);
-      }
-      const data = await response.json();
-      setLogChanges(data);
-    } catch (error) {
-      console.error("Error fetching changes:", error);
-      toast.error(`Error fetching changes: ${error.message}`);
-      setLogChanges([]);
-    }
+  // Add a new log row for a day
+  const handleAddLogRow = (date) => {
+    setLogsByDay((prev) => {
+      const updated = { ...prev };
+      updated[date] = [
+        ...(updated[date] || []),
+        {
+          id: `temp-${Date.now()}-${date}-${(updated[date]?.length || 0)}`,
+          project_id: "",
+          description: "",
+          start_time: "",
+          end_time: "",
+          total_hours: "0:00",
+          log_date: date,
+        },
+      ];
+      return updated;
+    });
   };
 
-  // Reset logChanges when dialog closes
-  useEffect(() => {
-    if (!showChangeHistory) {
-      setLogChanges([]);
-      setSelectedLogId(null);
+  // Remove a log row for a day and delete from database if it exists
+  const handleRemoveLogRow = async (date, idx) => {
+    if (!logsByDay[date] || idx >= logsByDay[date].length) {
+      toast.error(`Invalid log index ${idx} for date ${date}.`);
+      return;
     }
-  }, [showChangeHistory]);
+    const log = logsByDay[date][idx];
+    if (!log) {
+      toast.error("Log data not found.");
+      return;
+    }
+
+    // If the log has a valid ID (not temp), delete it from the database
+    if (!String(log.id).startsWith("temp-")) {
+      setLoading(true);
+      try {
+        const res = await fetch(`${BASE_URL}/api/daily-logs/${log.id}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+        });
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          throw new Error(errorData.message || "Failed to delete log.");
+        }
+        toast.success("Log deleted successfully!");
+      } catch (error) {
+        toast.error(`Error deleting log: ${error.message}`);
+        setLoading(false);
+        return;
+      }
+    }
+
+    // Update the local state to remove the log
+    setLogsByDay((prev) => {
+      const updated = { ...prev };
+      updated[date] = updated[date].filter((_, i) => i !== idx);
+      if (updated[date].length === 0) {
+        updated[date] = [
+          {
+            id: `temp-${Date.now()}-${date}-0`,
+            project_id: "",
+            description: "",
+            start_time: "",
+            end_time: "",
+            total_hours: "0:00",
+            log_date: date,
+          },
+        ];
+      }
+      return updated;
+    });
+    setLoading(false);
+  };
 
   return (
     <div className="container mx-auto p-4">
+      <ToastContainer />
       <Card className="w-full">
         <CardHeader className="bg-blue-100 text-center py-4">
           <CardTitle className="text-2xl font-bold">
-            Time Sheet for Employees
+            Time Sheet for Employees (Weekly)
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -561,7 +662,7 @@ export default function Home() {
           {loading ? (
             <div>Loading...</div>
           ) : employee ? (
-            <div className="grid grid-cols-2 gap-4 mb-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
               <div>
                 <Label htmlFor="employee-name">Name</Label>
                 <Input
@@ -581,7 +682,25 @@ export default function Home() {
                 />
               </div>
               <div>
-                <Label htmlFor="reports-to">Reports To (ID)</Label>
+                <Label htmlFor="employee-department">Department</Label>
+                <Input
+                  id="employee-department"
+                  value={department?.name || "No department"}
+                  readOnly
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label htmlFor="employee-designation">Designation</Label>
+                <Input
+                  id="employee-designation"
+                  value={designation?.title || "No designation"}
+                  readOnly
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label htmlFor="reports-to">Reports To</Label>
                 <Input
                   id="reports-to"
                   value={employee.reports_to || "No manager"}
@@ -615,40 +734,37 @@ export default function Home() {
 
           {employee && (
             <>
-              <h2 className="text-xl font-bold mt-8 mb-4">Timesheet and Logs</h2>
-              <div className="grid grid-cols-2 gap-4 mb-4">
+              <h2 className="text-xl font-bold mt-8 mb-4">Timesheet and Logs (Weekly)</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div>
-                  <Label htmlFor="manager-name">Manager Name</Label>
+                  <Label htmlFor="week-start">Week Start</Label>
                   <Input
-                    id="manager-name"
-                    value={
-                      managerHierarchy.length > 0
-                        ? managerHierarchy[0].employee_name
-                        : "No manager"
-                    }
-                    readOnly
+                    id="week-start"
+                    type="date"
+                    value={weekStart}
+                    onChange={(e) => setWeekStart(e.target.value)}
                     className="mt-1"
                   />
                 </div>
                 <div>
-                  <Label htmlFor="week-starting">Week Starting</Label>
-                  <div className="flex space-x-2">
-                    <Input
-                      id="week-starting"
-                      type="date"
-                      value={weekStarting || ""}
-                      onChange={(e) => setWeekStarting(e.target.value)}
-                      className="mt-1"
-                    />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleSaveWeek}
-                      disabled={loading || !weekStarting}
-                    >
-                      Save Week
-                    </Button>
-                  </div>
+                  <Label htmlFor="week-end">Week End</Label>
+                  <Input
+                    id="week-end"
+                    type="date"
+                    value={weekEnd}
+                    onChange={(e) => setWeekEnd(e.target.value)}
+                    className="mt-1"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleSaveWeek}
+                    disabled={loading || !weekStart || !weekEnd}
+                  >
+                    Load/Save Week
+                  </Button>
                 </div>
               </div>
 
@@ -656,151 +772,39 @@ export default function Home() {
                 loading ? (
                   <div>Loading...</div>
                 ) : (
-                  <div className="w-full overflow-auto">
-                    <Table>
-                      <TableHeader className="bg-blue-100">
-                        <TableRow>
-                          <TableHead className="border">Date</TableHead>
-                          <TableHead className="border">Day</TableHead>
-                          <TableHead className="border">Morning In (AM)</TableHead>
-                          <TableHead className="border">Morning Out (AM)</TableHead>
-                          <TableHead className="border">Afternoon In (PM)</TableHead>
-                          <TableHead className="border">Afternoon Out (PM)</TableHead>
-                          <TableHead className="border">Description</TableHead>
-                          <TableHead className="border">Total Hours</TableHead>
-                          <TableHead className="border">Actions</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {weekDates.map((day, index) => {
-                          const dateKey = toMMDDYYYY(day.date);
-                          const log = editedLogs[dateKey] || {};
-                          const isOddRow = index % 2 === 0;
-                          return (
-                            <TableRow
-                              key={dateKey}
-                              className={isOddRow ? "bg-gray-50" : "bg-white"}
-                            >
-                              <TableCell className="border">{dateKey}</TableCell>
-                              <TableCell className="border">{day.day}</TableCell>
-                              <TableCell className="border">
-                                <Input
-                                  type="time"
-                                  value={log.time_in_am || ""}
-                                  onChange={(e) =>
-                                    handleTimeChange(dateKey, "time_in_am", e.target.value)
-                                  }
-                                  onFocus={() => handleTimeInputFocus(dateKey, "time_in_am")}
-                                />
-                              </TableCell>
-                              <TableCell className="border">
-                                <Input
-                                  type="time"
-                                  value={log.time_out_am || ""}
-                                  onChange={(e) =>
-                                    handleTimeChange(dateKey, "time_out_am", e.target.value)
-                                  }
-                                  onFocus={() => handleTimeInputFocus(dateKey, "time_out_am")}
-                                />
-                              </TableCell>
-                              <TableCell className="border">
-                                <Input
-                                  type="time"
-                                  value={log.time_in_pm || ""}
-                                  onChange={(e) =>
-                                    handleTimeChange(dateKey, "time_in_pm", e.target.value)
-                                  }
-                                  onFocus={() => handleTimeInputFocus(dateKey, "time_in_pm")}
-                                />
-                              </TableCell>
-                              <TableCell className="border">
-                                <Input
-                                  type="time"
-                                  value={log.time_out_pm || ""}
-                                  onChange={(e) =>
-                                    handleTimeChange(dateKey, "time_out_pm", e.target.value)
-                                  }
-                                  onFocus={() => handleTimeInputFocus(dateKey, "time_out_pm")}
-                                />
-                              </TableCell>
-                              <TableCell className="border">
-                                <Input
-                                  value={log.description || ""}
-                                  onChange={(e) => handleDescriptionChange(dateKey, e.target.value)}
-                                />
-                              </TableCell>
-                              <TableCell className="border">
-                                {formatTotalHours(log.total_hours) || "0:00"}
-                              </TableCell>
-                              <TableCell className="border">
-                                <div className="space-x-2">
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => handleSaveLog(dateKey)}
-                                    disabled={loading || !timesheetId}
-                                  >
-                                    Save
-                                  </Button>
-                                  <Dialog
-                                    open={showChangeHistory && selectedLogId === log.id}
-                                    onOpenChange={(open) => setShowChangeHistory(open)}
-                                  >
-                                    <DialogTrigger asChild>
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => {
-                                          setSelectedLogId(log.id);
-                                          setShowChangeHistory(true);
-                                          if (log.id && !String(log.id).startsWith("temp-"))
-                                            fetchLogChanges(log.id);
-                                        }}
-                                        disabled={!log.id || String(log.id).startsWith("temp-") || loading}
-                                      >
-                                        View Changes
-                                      </Button>
-                                    </DialogTrigger>
-                                    <DialogContent>
-                                      <DialogHeader>
-                                        <DialogTitle>Change History for {dateKey}</DialogTitle>
-                                      </DialogHeader>
-                                      {logChanges.length > 0 ? (
-                                        <Table>
-                                          <TableHeader>
-                                            <TableRow>
-                                              <TableHead className="border">Description</TableHead>
-                                              <TableHead className="border">Updated At</TableHead>
-                                            </TableRow>
-                                          </TableHeader>
-                                          <TableBody>
-                                            {logChanges.map((change, index) => (
-                                              <TableRow
-                                                key={change.id}
-                                                className={index % 2 === 0 ? "bg-gray-50" : "bg-white"}
-                                              >
-                                                <TableCell className="border">{change.new_description}</TableCell>
-                                                <TableCell className="border text-sm">
-                                                  {new Date(change.changed_at).toLocaleString("en-IN", {
-                                                    timeZone: "Asia/Kolkata",
-                                                  })}
-                                                </TableCell>
-                                              </TableRow>
-                                            ))}
-                                          </TableBody>
-                                        </Table>
-                                      ) : (
-                                        <div className="text-gray-500">No changes recorded.</div>
-                                      )}
-                                    </DialogContent>
-                                  </Dialog>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
+                  <div>
+                    {weekDates.map((day) => (
+                      <div key={day.date} className="mb-8">
+                        <h3 className="font-semibold mb-2">
+                          {day.date} ({day.day})
+                        </h3>
+                        <TimesheetTable
+                          day={day}
+                          logs={logsByDay[day.date] || []}
+                          projects={projects}
+                          loading={loading}
+                          setLogsForDay={(fn) =>
+                            setLogsByDay((prev) => ({
+                              ...prev,
+                              [day.date]: fn(prev[day.date] || []),
+                            }))
+                          }
+                          handleAddLogRow={() => handleAddLogRow(day.date)}
+                          handleRemoveLogRow={(idx) => handleRemoveLogRow(day.date, idx)}
+                          handleSaveLog={(idx) => handleSaveLog(day, idx)}
+                          selectedLogId={selectedLogId}
+                          setSelectedLogId={setSelectedLogId}
+                          showChangeDialog={showChangeDialog}
+                          setShowChangeDialog={setShowChangeDialog}
+                        />
+                        <DailyLogChangesDialog
+                          open={showChangeDialog}
+                          onOpenChange={setShowChangeDialog}
+                          logId={selectedLogId}
+                          projects={projects}
+                        />
+                      </div>
+                    ))}
                   </div>
                 )
               )}

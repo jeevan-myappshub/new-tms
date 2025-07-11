@@ -1,58 +1,28 @@
+# models/employee.py
+
 from sqlalchemy import Column, Integer, String, ForeignKey
-from sqlalchemy.orm import relationship, backref
+from sqlalchemy.orm import relationship
 from models.base import Base
-from models.employee_projects import employee_projects
 
 class Employee(Base):
     __tablename__ = 'employees'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     employee_name = Column(String(100), nullable=False)
-    email = Column(String(100), nullable=False, unique=True)
-    reports_to = Column(Integer, ForeignKey('employees.id', ondelete="SET NULL"), nullable=True)
-    status = Column(String(20), nullable=False, default='active')  # 'active' or 'inactive'
-    department_id = Column(Integer, ForeignKey('departments.id', ondelete="SET NULL"), nullable=True)
+    email = Column(String(100), nullable=False)
+    department_id = Column(Integer, ForeignKey('departments.id', ondelete='CASCADE'))
+    designation_id = Column(Integer, ForeignKey('designations.id', ondelete='SET NULL'))
+    reports_to_id = Column(Integer, ForeignKey('employees.id'), nullable=True)  # 👈 Manager field
 
-    # Self-referencing relationship: manager and subordinates
-    manager = relationship('Employee', remote_side=[id], backref=backref('subordinates', lazy='dynamic'))
+    department = relationship("Department", back_populates="employees")
+    designation = relationship("Designation", back_populates="employees")
+    timesheets = relationship("Timesheet", back_populates="employee", cascade="all, delete-orphan")
 
-    # Relationship to Department
-    department = relationship('Department', backref='employees')
 
-    # Many-to-many relationship to Projects
-    projects = relationship(
-        'Project',
-        secondary=employee_projects,
-        back_populates='employees'
-    )
-
-    # Project team roles (with role info)
-    project_roles = relationship('ProjectTeam', back_populates='employee', cascade="all, delete-orphan")
-
-    # Relationship to Timesheet
-    timesheets = relationship(
-        'Timesheet',
-        back_populates='employee',
-        cascade="all, delete-orphan",
-        passive_deletes=True
-    )
+    manager = relationship("Employee", remote_side=[id], backref="subordinates")  # 👈 Self-relationship
 
     def as_dict(self):
-        return {column.name: getattr(self, column.name) for column in self.__table__.columns}
-
-    def set_status(self, session, new_status):
-        """Set the employee's status to 'active' or 'inactive'."""
-        if new_status not in ('active', 'inactive'):
-            raise ValueError("Status must be 'active' or 'inactive'")
-        self.status = new_status
-        session.add(self)
-
-    @classmethod
-    def active(cls, session):
-        """Return a query for only active employees."""
-        return session.query(cls).filter(cls.status == 'active')
-
-    @classmethod
-    def inactive(cls, session):
-        """Return a query for only inactive employees."""
-        return session.query(cls).filter(cls.status == 'inactive')
+        data = {col.name: getattr(self, col.name) for col in self.__table__.columns}
+        if self.manager:
+            data['reports_to'] = self.manager.employee_name
+        return data
