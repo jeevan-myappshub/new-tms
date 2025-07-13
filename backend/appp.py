@@ -10,8 +10,10 @@ from models.department import Department
 from models.designation import Designation
 from models.timesheet import Timesheet
 from models.dailylogs import DailyLog
+from models.dailylogchanges import DailyLogChange
 from models.project import Project
 from sqlalchemy.exc import IntegrityError
+import re
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "http://localhost:3000"}})
@@ -219,6 +221,240 @@ def save_daily_logs():
     finally:
         session.close()
 
+
+# admin eendpoints 
+# 1. List all employees with department, designation, and manager hierarchy
+@app.route("/api/employees/with-details", methods=["GET"])
+def get_employees_with_details():
+    session = get_session()
+    try:
+        manager_id = request.args.get("manager_id")
+        query = session.query(Employee)
+        if manager_id:
+            query = query.filter(Employee.reports_to_id == int(manager_id))
+        employees = query.all()
+        result = []
+        for emp in employees:
+            # Build manager hierarchy (above this employee)
+            hierarchy = []
+            current = emp
+            visited = set()
+            while current.reports_to_id and current.reports_to_id not in visited:
+                visited.add(current.reports_to_id)
+                manager = session.query(Employee).filter_by(id=current.reports_to_id).first()
+                if not manager:
+                    break
+                hierarchy.append({
+                    "id": manager.id,
+                    "employee_name": manager.employee_name,
+                    "email": manager.email,
+                    "designation": manager.designation.as_dict() if manager.designation else None,
+                    "department": manager.department.as_dict() if manager.department else None,
+                })
+                current = manager
+            result.append({
+                "id": emp.id,
+                "employee_name": emp.employee_name,
+                "email": emp.email,
+                "department": emp.department.as_dict() if emp.department else None,
+                "designation": emp.designation.as_dict() if emp.designation else None,
+                "reports_to": emp.reports_to_id,
+                "manager_hierarchy": hierarchy,
+            })
+        return jsonify(result), 200
+    finally:
+        safe_close(session)
+
+@app.route("/api/employees", methods=["POST"])
+def add_employee():
+    session = get_session()
+    try:
+        data = request.get_json()
+        name = data.get("employee_name")
+        email = data.get("email")
+        reports_to = data.get("reports_to")
+        designation_id = data.get("designation_id")
+        department_id = data.get("department_id")
+
+        # Validate required fields
+        if not name or not email or not designation_id or not department_id:
+            return jsonify({"error": "Missing required fields"}), 400
+
+        # Email format validation
+        if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+            return jsonify({"error": "Invalid email format"}), 400
+
+        # Check if email already exists
+        if session.query(Employee).filter_by(email=email).first():
+            return jsonify({"error": "Email already exists"}), 400
+
+        # Validate designation and department existence
+        designation = session.get(Designation, designation_id)
+        if not designation:
+            return jsonify({"error": "Invalid designation_id"}), 400
+
+        department = session.get(Department, department_id)
+        if not department:
+            return jsonify({"error": "Invalid department_id"}), 400
+
+        # If manager (reports_to) is provided, check if they exist; allow null explicitly
+        if reports_to is not None:
+            if not session.get(Employee, reports_to):
+                return jsonify({"error": "Invalid reports_to ID"}), 400
+
+        # Create and add the employee
+        new_emp = Employee(
+            employee_name=name.strip(),
+            email=email.strip(),
+            reports_to_id=reports_to,  # Explicitly allow null for reports_to
+            designation_id=designation_id,
+            department_id=department_id
+        )
+        session.add(new_emp)
+        session.commit()
+
+        return jsonify({"message": "Employee added successfully"}), 201
+
+    except IntegrityError:
+        session.rollback()
+        return jsonify({"error": "Integrity error (possible foreign key constraint or duplicate)"}), 400
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        safe_close(session)
+
+# 6. Get change history for a daily log
+@app.route("/api/daily-logs/<int:log_id>/changes", methods=["GET"])
+def get_daily_log_changes(log_id):
+    session = get_session()
+    try:
+        changes = session.query(DailyLogChange).filter_by(daily_log_id=log_id).order_by(DailyLogChange.changed_at.desc()).all()
+        return jsonify([
+            {
+                "id": c.id,
+                "project_id": c.project_id,
+                "new_description": c.new_description,
+                "changed_at": c.changed_at.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            for c in changes
+        ]), 200
+    finally:
+        safe_close(session)
+
+
+
+# --- Department CRUD ---
+
+@app.route("/api/departments", methods=["GET"])
+def get_departments():
+    session = get_session()
+    try:
+        departments = session.query(Department).all()
+        return jsonify([d.as_dict() for d in departments]), 200
+    finally:
+        safe_close(session)
+
+@app.route("/api/departments", methods=["POST"])
+def add_department():
+    session = get_session()
+    try:
+        data = request.get_json()
+        name = data.get("name")
+        if not name:
+            return jsonify({"error": "Department name required"}), 400
+        if session.query(Department).filter_by(name=name).first():
+            return jsonify({"error": "Department already exists"}), 400
+        dept = Department(name=name)
+        session.add(dept)
+        session.commit()
+        return jsonify(dept.as_dict()), 201
+    finally:
+        safe_close(session)
+
+@app.route("/api/departments/<int:dept_id>", methods=["PUT"])
+def update_department(dept_id):
+    session = get_session()
+    try:
+        data = request.get_json()
+        name = data.get("name")
+        dept = session.query(Department).get(dept_id)
+        if not dept:
+            return jsonify({"error": "Department not found"}), 404
+        dept.name = name
+        session.commit()
+        return jsonify(dept.as_dict()), 200
+    finally:
+        safe_close(session)
+
+@app.route("/api/departments/<int:dept_id>", methods=["DELETE"])
+def delete_department(dept_id):
+    session = get_session()
+    try:
+        dept = session.query(Department).get(dept_id)
+        if not dept:
+            return jsonify({"error": "Department not found"}), 404
+        session.delete(dept)
+        session.commit()
+        return jsonify({"message": "Department deleted"}), 200
+    finally:
+        safe_close(session)
+
+# --- Designation CRUD ---
+
+@app.route("/api/designations", methods=["GET"])
+def get_designations():
+    session = get_session()
+    try:
+        designations = session.query(Designation).all()
+        return jsonify([d.as_dict() for d in designations]), 200
+    finally:
+        safe_close(session)
+
+@app.route("/api/designations", methods=["POST"])
+def add_designation():
+    session = get_session()
+    try:
+        data = request.get_json()
+        title = data.get("title")
+        if not title:
+            return jsonify({"error": "Designation title required"}), 400
+        if session.query(Designation).filter_by(title=title).first():
+            return jsonify({"error": "Designation already exists"}), 400
+        des = Designation(title=title)
+        session.add(des)
+        session.commit()
+        return jsonify(des.as_dict()), 201
+    finally:
+        safe_close(session)
+
+@app.route("/api/designations/<int:des_id>", methods=["PUT"])
+def update_designation(des_id):
+    session = get_session()
+    try:
+        data = request.get_json()
+        title = data.get("title")
+        des = session.query(Designation).get(des_id)
+        if not des:
+            return jsonify({"error": "Designation not found"}), 404
+        des.title = title
+        session.commit()
+        return jsonify(des.as_dict()), 200
+    finally:
+        safe_close(session)
+
+@app.route("/api/designations/<int:des_id>", methods=["DELETE"])
+def delete_designation(des_id):
+    session = get_session()
+    try:
+        des = session.query(Designation).get(des_id)
+        if not des:
+            return jsonify({"error": "Designation not found"}), 404
+        session.delete(des)
+        session.commit()
+        return jsonify({"message": "Designation deleted"}), 200
+    finally:
+        safe_close(session)
 
 # ---------------- Run App ----------------
 if __name__ == '__main__':

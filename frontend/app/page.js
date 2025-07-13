@@ -1,3 +1,4 @@
+
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
@@ -56,7 +57,6 @@ function getDayOfWeek(dateStr) {
 }
 
 const HierarchyTree = ({ hierarchy, currentEmployee }) => {
-  // Compose the full hierarchy: managers (bottom-up) + current employee
   const fullHierarchy = [...(hierarchy || [])].reverse().concat([currentEmployee]);
 
   return (
@@ -68,7 +68,133 @@ const HierarchyTree = ({ hierarchy, currentEmployee }) => {
               {person.email === currentEmployee.email ? "👤 " : ""}
               {person.employee_name}
             </span>
-            <span className="text-sm text-gray-500 italic">
+            <span className="text-sm text-gray-900 italic">
+              {person.designation?.title ||
+                (person.email === currentEmployee.email
+                  ? currentEmployee.designation?.title
+                  : "No designation")}
+            </span>
+            {index < fullHierarchy.length - 1 && (
+              <span className="text-gray-500 text-xl my-1">↑</span>
+            )}
+          </div>
+        ))
+      ) : (
+        <div className="text-gray-500">No manager hierarchy available.</div>
+      )}
+    </div>
+  );
+};
+
+const DailyLogChangesDialog = ({ open, onOpenChange, logId, projects }) => {
+  const [changes, setChanges] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (open && logId && !String(logId).startsWith("temp-")) {
+      setLoading(true);
+      fetch(`${BASE_URL}/api/daily-logs/${logId}/changes`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+      })
+        .then((res) => (res.ok ? res.json() : []))
+        .then((data) => setChanges(data))
+        .catch(() => setChanges([]))
+        .finally(() => setLoading(false));
+    } else {
+      setChanges([]);
+ рабо
+
+System: Based on the error message and the provided code, the issue in your application stems from a mismatch in the `handleSaveLog` function where the `date` parameter is incorrectly passed as the entire `day` object instead of `day.date`. This causes the `logsForDay` lookup to fail, resulting in the "Log not found" error despite valid log data existing for the date "2025-07-07". Below, I’ve provided the corrected code, updating the `TimesheetTable` component call in the `Home` component to pass `day.date` instead of `day` to the `handleSaveLog` function. This change ensures that the `logsForDay` array is correctly accessed using the date string (e.g., "2025-07-07") as the key in the `logsByDay` object.
+
+### Explanation of the Fix
+- **Issue**: In the `TimesheetTable` component, the `handleSaveLog` prop is defined as:
+  ```javascript
+  handleSaveLog={(idx) => handleSaveLog(day, idx)}
+  ```
+  Here, `day` is an object `{ date: "2025-07-07", day: "Monday" }`, but the `handleSaveLog` function expects a string (the date, e.g., "2025-07-07"). This causes `logsByDay[date]` to be `logsByDay[{ date: "2025-07-07", day: "Monday" }]`, which is undefined, leading to the error.
+- **Fix**: Change the prop to:
+  ```javascript
+  handleSaveLog={(idx) => handleSaveLog(day.date, idx)}
+  ```
+  This passes the `date` string directly, ensuring `logsByDay[date]` correctly retrieves the log array for the given date.
+
+### Updated Code
+Below is the full updated code with the correction applied. The change is specifically in the `TimesheetTable` component call within the `Home` component’s render method. The rest of the code, including the `console.error` statements from your latest version, is retained as per your previous request. The artifact ID remains the same, as this is an update to the existing code.
+
+<xaiArtifact artifact_id="b13d23a0-4140-4a10-a7b3-f8832bb48829" artifact_version_id="8a6e0492-43af-4149-b6db-075b155bcad9" title="index.jsx" contentType="text/jsx">
+```jsx
+"use client";
+
+import React, { useState, useEffect, useMemo } from "react";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
+import { toast, ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
+
+const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:5000";
+const CURRENT_EMAIL = "robertfisher@example.org"; // Replace with auth context in production
+
+function toYYYYMMDD(date) {
+  if (!date) return "";
+  const d = new Date(date);
+  return d.toISOString().split("T")[0];
+}
+
+function isValidDate(dateStr) {
+  if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  const date = new Date(dateStr);
+  return !isNaN(date.getTime());
+}
+
+function isValidTime(timeStr) {
+  if (!timeStr || !/^\d{2}:\d{2}$/.test(timeStr)) return false;
+  const [hours, minutes] = timeStr.split(":").map(Number);
+  return hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60;
+}
+
+function normalizeTime(timeStr) {
+  if (!timeStr) return "";
+  return timeStr.split(":").slice(0, 2).join(":");
+}
+
+function calculateTotalHours(start, end) {
+  if (!start || !end || !isValidTime(start) || !isValidTime(end)) return "0:00";
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  let mins = (eh * 60 + em) - (sh * 60 + sm);
+  if (mins < 0) mins += 24 * 60; // Handle overnight shifts
+  if (mins === 0) return "0:00"; // Handle same start and end time
+  const hours = Math.floor(mins / 60);
+  const minutes = mins % 60;
+  return `${hours}:${minutes.toString().padStart(2, "0")}`;
+}
+
+function getDayOfWeek(dateStr) {
+  if (!isValidDate(dateStr)) return "";
+  const date = new Date(dateStr);
+  return date.toLocaleString("en-US", { weekday: "long" });
+}
+
+const HierarchyTree = ({ hierarchy, currentEmployee }) => {
+  const fullHierarchy = [...(hierarchy || [])].reverse().concat([currentEmployee]);
+
+  return (
+    <div className="flex flex-col items-center space-y-2">
+      {fullHierarchy.length > 0 ? (
+        fullHierarchy.map((person, index) => (
+          <div key={person.id || person.email || index} className="flex flex-col items-center">
+            <span className="text-lg font-medium">
+              {person.email === currentEmployee.email ? "👤 " : ""}
+              {person.employee_name}
+            </span>
+            <span className="text-sm text-gray-900 italic">
               {person.designation?.title ||
                 (person.email === currentEmployee.email
                   ? currentEmployee.designation?.title
@@ -260,7 +386,7 @@ const TimesheetTable = ({
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => handleSaveLog(day, idx)}
+                  onClick={() => handleSaveLog(day.date, idx)}
                   disabled={loading || !log.project_id || !isValidTime(log.start_time) || !isValidTime(log.end_time)}
                 >
                   Save
@@ -279,7 +405,7 @@ const TimesheetTable = ({
                 <Button
                   variant="destructive"
                   size="sm"
-                  onClick={() => handleRemoveLogRow(idx)}
+                  onClick={() => handleRemoveLogRow(day.date, idx)}
                   disabled={logs.length === 1}
                 >
                   Remove
@@ -293,7 +419,7 @@ const TimesheetTable = ({
             <Button
               variant="outline"
               size="sm"
-              onClick={handleAddLogRow}
+              onClick={() => handleAddLogRow(day.date)}
               disabled={loading}
             >
               + Add Entry
@@ -319,7 +445,6 @@ export default function Home() {
   const [selectedLogId, setSelectedLogId] = useState(null);
   const [showChangeDialog, setShowChangeDialog] = useState(false);
 
-  // Compute week dates
   const weekDates = useMemo(() => {
     if (!weekStart || !isValidDate(weekStart) || !weekEnd || !isValidDate(weekEnd)) return [];
     const start = new Date(weekStart);
@@ -334,7 +459,6 @@ export default function Home() {
     return days;
   }, [weekStart, weekEnd]);
 
-  // Fetch employee, department, designation, projects
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
@@ -371,7 +495,6 @@ export default function Home() {
     fetchData();
   }, []);
 
-  // Initialize logs for each day in week
   useEffect(() => {
     const logs = {};
     weekDates.forEach((d) => {
@@ -390,7 +513,6 @@ export default function Home() {
     setLogsByDay(logs);
   }, [weekDates]);
 
-  // Save week: check/create timesheet, fetch logs
   const handleSaveWeek = async () => {
     if (!employee?.id || !isValidDate(weekStart) || !isValidDate(weekEnd)) {
       toast.error("Please select a valid week and ensure employee data is loaded.");
@@ -398,7 +520,6 @@ export default function Home() {
     }
     setLoading(true);
     try {
-      // Check or create timesheet for this week
       const checkUrl = `${BASE_URL}/api/timesheets/by-employee-week?employee_id=${employee.id}&start_date=${weekStart}&end_date=${weekEnd}`;
       let timesheetRes = await fetch(checkUrl, {
         method: "GET",
@@ -429,7 +550,6 @@ export default function Home() {
         throw new Error("Failed to fetch timesheet.");
       }
 
-      // Fetch daily logs for this timesheet
       const logsUrl = `${BASE_URL}/api/timesheets/${timesheet.id}/daily-logs`;
       const logsRes = await fetch(logsUrl, {
         method: "GET",
@@ -439,7 +559,6 @@ export default function Home() {
       let logsData = [];
       if (logsRes.ok) logsData = await logsRes.json();
 
-      // Group logs by day
       const logsMap = {};
       weekDates.forEach((d) => (logsMap[d.date] = []));
       logsData.forEach((log) => {
@@ -455,7 +574,6 @@ export default function Home() {
           });
         }
       });
-      // Ensure at least one row per day
       weekDates.forEach((d) => {
         if (logsMap[d.date].length === 0) {
           logsMap[d.date].push({
@@ -478,15 +596,15 @@ export default function Home() {
     }
   };
 
-  // Save a single log (row) for a day
-  const handleSaveLog = async (day, idx) => {
-    const logsForDay = logsByDay[day.date] || [];
+  const handleSaveLog = async (date, idx) => {
+    const logsForDay = logsByDay[date] || [];
     if (!Array.isArray(logsForDay) || idx < 0 || idx >= logsForDay.length) {
-      toast.error(`Invalid log index ${idx} for date ${day.date}.`);
+      toast.error(`Invalid log index ${idx} for date ${date}.`);
       return;
     }
     const log = logsForDay[idx];
     if (!log) {
+      console.error("Log not found for", date, idx, logsForDay);
       toast.error("Log data not found.");
       return;
     }
@@ -502,7 +620,7 @@ export default function Home() {
       toast.error("Please select a project and enter valid start and end times.");
       return;
     }
-    const logDate = day.date;
+    const logDate = date;
     const payload = [
       {
         id: String(log.id).startsWith("temp-") ? null : log.id,
@@ -528,7 +646,6 @@ export default function Home() {
       }
       toast.success("Log saved successfully!");
 
-      // Refetch logs for this day only
       const logsUrl = `${BASE_URL}/api/timesheets/${timesheetId}/daily-logs`;
       const logsRes = await fetch(logsUrl, {
         method: "GET",
@@ -538,7 +655,6 @@ export default function Home() {
       if (!logsRes.ok) throw new Error("Failed to fetch logs.");
       const logsData = await logsRes.json();
 
-      // Update logs for this day only
       setLogsByDay((prev) => {
         const updated = { ...prev };
         updated[logDate] = logsData
@@ -574,7 +690,6 @@ export default function Home() {
     }
   };
 
-  // Add a new log row for a day
   const handleAddLogRow = (date) => {
     setLogsByDay((prev) => {
       const updated = { ...prev };
@@ -594,19 +709,19 @@ export default function Home() {
     });
   };
 
-  // Remove a log row for a day and delete from database if it exists
   const handleRemoveLogRow = async (date, idx) => {
-    if (!logsByDay[date] || idx >= logsByDay[date].length) {
+    const logsForDay = logsByDay[date] || [];
+    if (!Array.isArray(logsForDay) || idx < 0 || idx >= logsForDay.length) {
       toast.error(`Invalid log index ${idx} for date ${date}.`);
       return;
     }
-    const log = logsByDay[date][idx];
+    const log = logsForDay[idx];
     if (!log) {
+      console.error("Log not found for", date, idx, logsForDay);
       toast.error("Log data not found.");
       return;
     }
 
-    // If the log has a valid ID (not temp), delete it from the database
     if (!String(log.id).startsWith("temp-")) {
       setLoading(true);
       try {
@@ -626,11 +741,10 @@ export default function Home() {
       }
     }
 
-    // Update the local state to remove the log
     setLogsByDay((prev) => {
       const updated = { ...prev };
       updated[date] = updated[date].filter((_, i) => i !== idx);
-      if (updated[date].length === 0) {
+      if (!updated[date] || updated[date].length === 0) {
         updated[date] = [
           {
             id: `temp-${Date.now()}-${date}-0`,
@@ -791,7 +905,7 @@ export default function Home() {
                           }
                           handleAddLogRow={() => handleAddLogRow(day.date)}
                           handleRemoveLogRow={(idx) => handleRemoveLogRow(day.date, idx)}
-                          handleSaveLog={(idx) => handleSaveLog(day, idx)}
+                          handleSaveLog={(idx) => handleSaveLog(day.date, idx)}
                           selectedLogId={selectedLogId}
                           setSelectedLogId={setSelectedLogId}
                           showChangeDialog={showChangeDialog}
